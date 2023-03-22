@@ -109,10 +109,21 @@ def collect_walls(items):
 
 def debug_walls(image, walls):
     image = image.copy()
+    thickness = 3
     color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-    for wall in walls:
-        p0, p1 = wall
-        cv2.line(image, (p0[0], p0[1]), (p1[0], p1[1]), color, 10)
+
+    if isinstance(walls, Polygon):
+        cv2.polylines(
+            image,
+            [np.array(walls.exterior.xy).T.astype(np.int32)],
+            True,
+            color,
+            thickness,
+        )
+    else:
+        for wall in walls:
+            p0, p1 = wall
+            cv2.line(image, (p0[0], p0[1]), (p1[0], p1[1]), color, thickness)
     return image
 
 
@@ -185,7 +196,7 @@ def walls2concave(walls):
     result.append(s1)
 
     p = s1
-    while len(result) < len(p2p) :
+    while len(result) < len(p2p):
         for c in p2p[p]:
             if c not in result:
                 result.append(c)
@@ -196,14 +207,26 @@ def walls2concave(walls):
 
 
 def group2rect(groups):
-    result = []
+    concaves = []
     for walls in tqdm(groups):
-        ufs = UnionFindSet(walls)
         pts = walls2concave(walls)
-        if len(pts) == 0:
-            continue
+        concaves.append(Polygon(pts))
 
-        base = Polygon(pts)
+    for i in range(len(concaves)):
+        for j in range(i + 1, len(concaves)):
+            if within(concaves[j], concaves[i]):
+                concaves[i] = Polygon(
+                    np.array(concaves[i].exterior.coords.xy).T,
+                    [np.array(concaves[j].exterior.coords.xy).T],
+                )
+                groups[i] += groups[j]
+                groups[j] = []
+                break
+
+    result = []
+    for i, walls in tqdm(enumerate(groups)):
+        ufs = UnionFindSet(walls)
+        base = concaves[i]
 
         for i in range(len(walls)):
             for j in range(i + 1, len(walls)):
@@ -235,16 +258,18 @@ def group2rect(groups):
         for tmp in _result:
             if len(tmp) > 1:
                 result.append(tmp)
-    return result
+    return result, concaves
 
 
 def main():
     global ox, oy, w, h, scale
 
-    image = cv2.imread("./cropped/F1.png", cv2.IMREAD_UNCHANGED)
+    floor = "F1"
+
+    image = cv2.imread(f"./cropped/{floor}.png", cv2.IMREAD_UNCHANGED)
     image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
-    with open("./input/F1.json", "r", encoding="utf-8") as f:
+    with open(f"./input/{floor}.json", "r", encoding="utf-8") as f:
         items = json.load(f)
     ox, oy, w, h = get_axis(items)
     scale = max(image.shape) / max(w, h)
@@ -252,12 +277,51 @@ def main():
     print(image.shape[0] / image.shape[1], h / w, scale)
 
     walls = collect_walls(items)
+    _image = image.copy()
+    _image = debug_walls(_image, walls)
+    cv2.imwrite(f"./debug/{floor}_origin.png", _image)
     groups = group_walls(walls)
 
-    rects = group2rect(groups)
+    rects, concaves = group2rect(groups)
+    _image = image.copy()
+    for concave in tqdm(concaves):
+        _image = debug_walls(_image, concave)
+    cv2.imwrite(f"./debug/{floor}_concave.png", _image)
+
+    _image = image.copy()
     for rect in tqdm(rects):
-        image = debug_walls(image, rect)
-    cv2.imwrite("./debug/F1.png", image)
+        _image = debug_walls(_image, rect)
+    cv2.imwrite(f"./debug/{floor}_group.png", _image)
+
+    # 写文件
+    output = {
+        "version": "5.0.1",
+        "flags": {},
+        "imagePath": f"{floor}.png",
+        "imageHeight": h,
+        "imageWidth": w,
+        "fillColor": [255, 0, 0, 128],
+        "lineColor": [0, 255, 0, 128],
+        "shapes": [],
+        "imageData": None,
+    }
+    wall_template = {
+        "label": "wall",
+        "shape_type": "polygon",
+        "flags": {},
+    }
+    for rect in tqdm(rects):
+        wall = copy.deepcopy(wall_template)
+        convex = convex_hull(
+            MultiPoint([line[0] for line in rect] + [line[1] for line in rect])
+        )
+        if not isinstance(convex, Polygon):
+            continue
+        wall["points"] = np.array(convex.exterior.xy).T.tolist()
+        output["shapes"].append(wall)
+    with open(f"./output/{floor}.json", "w", encoding="utf-8") as f:
+        json.dump(output, f)
+    cv2.imwrite(f"./output/{floor}.png", image)
 
 
 if __name__ == "__main__":
