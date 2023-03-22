@@ -5,6 +5,8 @@ import cv2
 import copy
 from shapely import MultiPoint, Polygon, convex_hull, within
 from tqdm import trange, tqdm
+import matplotlib.pyplot as plt
+from shape import show
 
 # opencv 坐标系左上角
 # CAD 坐标系左下角
@@ -166,12 +168,12 @@ def colinear(o, a, b):
     return isclose(x1 * y2 - x2 * y1, 0)
 
 
-def parallel(wall1, wall2):
+def parallel(wall1, wall2, eps=1e-4):
     p1, p2 = np.array(wall1)
     p3, p4 = np.array(wall2)
     x1, y1 = p2 - p1
     x2, y2 = p4 - p3
-    return isclose(x1 * y2 - x2 * y1, 0)
+    return isclose(x1 * y2 - x2 * y1, 0, eps)
 
 
 def walls2concave(walls):
@@ -212,6 +214,31 @@ def group2rect(groups):
         pts = walls2concave(walls)
         concaves.append(Polygon(pts))
 
+    groups = []
+    for concave in concaves:
+        pts = np.array(concave.exterior.xy).T.astype(np.int32).tolist()[:-1]
+        n = len(pts)
+        pts += pts
+        groups.append(
+            [(tuple(p1), tuple(p2)) for (p1, p2) in zip(pts[:n], pts[1 : n + 1])]
+        )
+
+    _groups = []
+    for group in groups:
+        _i = 0
+        tmp = []
+        while _i < len(group):
+            cur = group[_i]
+            next = group[(_i + 1) % len(group)]
+            while colinear(cur[0], next[0], next[1]):
+                cur = (cur[0], next[1])
+                _i += 1
+                next = group[(_i + 1) % len(group)]
+            _i += 1
+            tmp.append(cur)
+        _groups.append(tmp)
+    groups = copy.deepcopy(_groups)
+
     for i in range(len(concaves)):
         for j in range(i + 1, len(concaves)):
             if within(concaves[j], concaves[i]):
@@ -230,18 +257,16 @@ def group2rect(groups):
 
         for i in range(len(walls)):
             for j in range(i + 1, len(walls)):
-                if not parallel(walls[i], walls[j]) or colinear(
+                if (not parallel(walls[i], walls[j], 1e-2)) or colinear(
                     walls[i][0], walls[j][0], walls[j][1]
                 ):
                     continue
                 polygon = convex_hull(
                     MultiPoint([walls[i][0], walls[i][1], walls[j][0], walls[j][1]])
                 )
-                try:
-                    if not within(polygon, base):
-                        continue
-                except Exception as e:
-                    print(e)
+                if not isinstance(polygon, Polygon):
+                    continue
+                if not within(polygon, base):
                     continue
                 ufs.union(walls[i], walls[j])
 
@@ -310,11 +335,15 @@ def main():
         "shape_type": "polygon",
         "flags": {},
     }
+    hash = set()
     for rect in tqdm(rects):
         wall = copy.deepcopy(wall_template)
         convex = convex_hull(
             MultiPoint([line[0] for line in rect] + [line[1] for line in rect])
         )
+        if convex in hash:
+            continue
+        hash.add(convex)
         if not isinstance(convex, Polygon):
             continue
         wall["points"] = np.array(convex.exterior.xy).T.tolist()

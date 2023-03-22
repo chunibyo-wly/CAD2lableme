@@ -1,4 +1,4 @@
-from shapely import Polygon, Point, LineString, within
+from shapely import Polygon, Point, LineString, within, MultiPoint, convex_hull
 import matplotlib.pyplot as plt
 
 
@@ -69,13 +69,19 @@ def test6():
     show([polygon1, polygon2, polygon3, polygon4])
 
 
+def test7():
+    polygon1 = convex_hull(MultiPoint([(0, 0), (0, 1), (1, 1), (1, 0)]))
+    polygon2 = convex_hull(MultiPoint([(0, 0), (1, 1), (1, 0),  (0, 1)]))
+    print(polygon1 == polygon2)
+
 def main():
     # test1()
     # test2()
     # test3()
     # test4()
     # test5()
-    test6()
+    # test6()
+    test7()
 
 
 if __name__ == "__main__":
