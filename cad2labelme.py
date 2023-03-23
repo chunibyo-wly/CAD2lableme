@@ -68,22 +68,37 @@ class UnionFindSet(object):
 
 
 def get_axis(items):
+    bound = []
     for item in items:
         feature_type = item["json_featuretype"]
         geometry = item["json_geometry"]["type"]
-        coordinates = np.array(item["json_geometry"]["coordinates"])
+        coordinates = item["json_geometry"]["coordinates"]
         if feature_type == "图框" and geometry == "Polygon":
+            coordinates = np.array(coordinates)
             coordinates = coordinates.reshape(-1, 2)
             X, Y = coordinates[:, 0], coordinates[:, 1]
             ox, oy = np.min(X), np.min(Y)
             w, h = np.max(X) - np.min(X), np.max(Y) - np.min(Y)
             return ox, oy, w, h
+        elif feature_type == "0" and geometry == "LineString":
+            for p in coordinates:
+                if len(p) != 3:
+                    continue
+                bound.append(p)
+
+    if len(bound) != 0:
+        bound = np.array(bound)
+        X, Y = bound[:, 0], bound[:, 1]
+        ox, oy = np.min(X), np.min(Y)
+        w, h = np.max(X) - np.min(X), np.max(Y) - np.min(Y)
+        return ox, oy, w, h
     assert False, "no 图框 found"
 
 
 def transform_axis(p):
     if len(p) > 2:
         p = p[:2]
+    p = np.array(p)
     p[0] -= ox
     p[1] -= oy
     p[1] = h - p[1]
@@ -97,8 +112,9 @@ def collect_walls(items):
     for item in items:
         feature_type = item["json_featuretype"]
         geometry = item["json_geometry"]["type"]
-        coordinates = np.array(item["json_geometry"]["coordinates"])
+        coordinates = item["json_geometry"]["coordinates"]
         if feature_type == "WALL" and geometry == "LineString":
+            coordinates = np.array(coordinates)
             n = len(coordinates)
             for i in range(n - 1):
                 p0, p1 = copy.deepcopy(coordinates[i]), copy.deepcopy(
@@ -126,7 +142,10 @@ def debug_walls(image, walls):
         )
     else:
         for wall in walls:
-            p0, p1 = wall
+            p0, p1 = np.array(wall)
+            p01 = (p1 - p0) // 10 * 1
+            p0 += p01
+            p1 -= p01
             cv2.line(image, (p0[0], p0[1]), (p1[0], p1[1]), color, thickness)
     return image
 
@@ -164,22 +183,26 @@ def isclose(a, b, eps=1e-4):
     return np.fabs(a - b) < eps
 
 
+def angle(a, b):
+    return (
+        np.arccos(np.abs(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))))
+        * 180
+        / np.pi
+    )
+
+
 def colinear(o, a, b):
     x1, y1 = a[0] - o[0], a[1] - o[1]
     x2, y2 = b[0] - o[0], b[1] - o[1]
     return isclose(x1 * y2 - x2 * y1, 0)
+    # return angle(np.array([x1, y1]), np.array([x2, y2])) < 3
 
 
 def parallel(wall1, wall2, eps=1e-4):
     p1, p2 = np.array(wall1)
     p3, p4 = np.array(wall2)
     a, b = p2 - p1, p4 - p3
-    angle = (
-        np.arccos(np.abs(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))))
-        * 180
-        / np.pi
-    )
-    return angle < 5
+    return angle(a, b) < 5
 
 
 def walls2concave(walls):
@@ -197,6 +220,12 @@ def walls2concave(walls):
         p2p[p1].add(p0)
 
     s1 = walls[0][0]
+    for p in p2p:
+        if len(p2p[p]) == 2:
+            a, b = p2p[p]
+            if not colinear(p, a, b):
+                s1 = p
+                break
     for p in p2p:
         if len(p2p[p]) > 2:
             return []
@@ -230,7 +259,9 @@ def group2rect(groups):
 
     groups = []
     for concave in concaves:
-        pts = np.array(concave.exterior.xy).T.astype(np.int32).tolist()[:-1]
+        pts = copy.deepcopy(
+            np.array(concave.exterior.xy).T.astype(np.int32).tolist()[:-1]
+        )
         n = len(pts)
         pts += pts
         groups.append(
@@ -244,7 +275,7 @@ def group2rect(groups):
         while _i < len(group):
             cur = group[_i]
             next = group[(_i + 1) % len(group)]
-            while colinear(cur[0], next[0], next[1]):
+            while colinear(next[0], cur[0], next[1]):
                 cur = (cur[0], next[1])
                 _i += 1
                 next = group[(_i + 1) % len(group)]
@@ -265,9 +296,9 @@ def group2rect(groups):
                 break
 
     result = []
-    for i, walls in tqdm(enumerate(groups)):
+    for idx, walls in tqdm(enumerate(groups)):
         ufs = UnionFindSet(walls)
-        base = concaves[i]
+        base = concaves[idx]
 
         for i in range(len(walls)):
             for j in range(i + 1, len(walls)):
@@ -275,7 +306,7 @@ def group2rect(groups):
                 # plt.plot([walls[j][0][0], walls[j][1][0]], [walls[j][0][1], walls[j][1][1]])
                 # plt.show()
                 if (not parallel(walls[i], walls[j], 1e-2)) or colinear(
-                    walls[i][0], walls[j][0], walls[j][1]
+                    walls[j][0], walls[i][0], walls[j][1]
                 ):
                     continue
                 polygon = convex_hull(
@@ -310,68 +341,68 @@ def group2rect(groups):
 def main():
     global ox, oy, w, h, scale
 
-    floor = "F1"
+    for idx in range(1, 7):
+        floor = f"F{idx}"
+        image = cv2.imread(f"./cropped/{floor}.png", cv2.IMREAD_UNCHANGED)
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
-    image = cv2.imread(f"./cropped/{floor}.png", cv2.IMREAD_UNCHANGED)
-    image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        with open(f"./input/{floor}.json", "r", encoding="utf-8") as f:
+            items = json.load(f)
+        ox, oy, w, h = get_axis(items)
+        scale = max(image.shape) / max(w, h)
+        print(image.shape, w, h)
+        print(image.shape[0] / image.shape[1], h / w, scale)
 
-    with open(f"./input/{floor}.json", "r", encoding="utf-8") as f:
-        items = json.load(f)
-    ox, oy, w, h = get_axis(items)
-    scale = max(image.shape) / max(w, h)
-    print(image.shape, w, h)
-    print(image.shape[0] / image.shape[1], h / w, scale)
+        walls = collect_walls(items)
+        _image = image.copy()
+        _image = debug_walls(_image, walls)
+        cv2.imwrite(f"./debug/{floor}_origin.png", _image)
+        groups = group_walls(walls)
 
-    walls = collect_walls(items)
-    _image = image.copy()
-    _image = debug_walls(_image, walls)
-    cv2.imwrite(f"./debug/{floor}_origin.png", _image)
-    groups = group_walls(walls)
+        rects, concaves = group2rect(groups)
+        _image = image.copy()
+        for concave in tqdm(concaves):
+            _image = debug_walls(_image, concave)
+        cv2.imwrite(f"./debug/{floor}_concave.png", _image)
 
-    rects, concaves = group2rect(groups)
-    _image = image.copy()
-    for concave in tqdm(concaves):
-        _image = debug_walls(_image, concave)
-    cv2.imwrite(f"./debug/{floor}_concave.png", _image)
+        _image = image.copy()
+        for rect in tqdm(rects):
+            _image = debug_walls(_image, rect)
+        cv2.imwrite(f"./debug/{floor}_group.png", _image)
 
-    _image = image.copy()
-    for rect in tqdm(rects):
-        _image = debug_walls(_image, rect)
-    cv2.imwrite(f"./debug/{floor}_group.png", _image)
-
-    # 写文件
-    output = {
-        "version": "5.0.1",
-        "flags": {},
-        "imagePath": f"{floor}.png",
-        "imageHeight": h,
-        "imageWidth": w,
-        "fillColor": [255, 0, 0, 128],
-        "lineColor": [0, 255, 0, 128],
-        "shapes": [],
-        "imageData": None,
-    }
-    wall_template = {
-        "label": "wall",
-        "shape_type": "polygon",
-        "flags": {},
-    }
-    hash = set()
-    for rect in tqdm(rects):
-        wall = copy.deepcopy(wall_template)
-        convex = convex_hull(
-            MultiPoint([line[0] for line in rect] + [line[1] for line in rect])
-        )
-        if convex in hash:
-            continue
-        hash.add(convex)
-        if not isinstance(convex, Polygon):
-            continue
-        wall["points"] = np.array(convex.exterior.xy).T.tolist()
-        output["shapes"].append(wall)
-    with open(f"./output/{floor}.json", "w", encoding="utf-8") as f:
-        json.dump(output, f)
-    cv2.imwrite(f"./output/{floor}.png", image)
+        # 写文件
+        output = {
+            "version": "5.0.1",
+            "flags": {},
+            "imagePath": f"{floor}.png",
+            "imageHeight": h,
+            "imageWidth": w,
+            "fillColor": [255, 0, 0, 128],
+            "lineColor": [0, 255, 0, 128],
+            "shapes": [],
+            "imageData": None,
+        }
+        wall_template = {
+            "label": "wall",
+            "shape_type": "polygon",
+            "flags": {},
+        }
+        hash = set()
+        for rect in tqdm(rects):
+            wall = copy.deepcopy(wall_template)
+            convex = convex_hull(
+                MultiPoint([line[0] for line in rect] + [line[1] for line in rect])
+            )
+            if convex in hash:
+                continue
+            hash.add(convex)
+            if not isinstance(convex, Polygon):
+                continue
+            wall["points"] = np.array(convex.exterior.xy).T.tolist()
+            output["shapes"].append(wall)
+        with open(f"./output/{floor}.json", "w", encoding="utf-8") as f:
+            json.dump(output, f)
+        cv2.imwrite(f"./output/{floor}.png", image)
 
 
 if __name__ == "__main__":
