@@ -98,14 +98,16 @@ def collect_walls(items):
         feature_type = item["json_featuretype"]
         geometry = item["json_geometry"]["type"]
         coordinates = np.array(item["json_geometry"]["coordinates"])
-        if (
-            feature_type == "WALL"
-            and geometry == "LineString"
-            and len(coordinates) == 2
-        ):
-            p0, p1 = coordinates[0], coordinates[1]
-            p0, p1 = transform_axis(p0), transform_axis(p1)
-            walls.append([p0, p1])
+        if feature_type == "WALL" and geometry == "LineString":
+            n = len(coordinates)
+            for i in range(n - 1):
+                p0, p1 = copy.deepcopy(coordinates[i]), copy.deepcopy(
+                    coordinates[i + 1]
+                )
+                p0, p1 = transform_axis(p0), transform_axis(p1)
+                if isclose(p0[0], p1[0], 1) and isclose(p0[1], p1[1], 1):
+                    continue
+                walls.append([p0, p1])
     return np.array(walls)
 
 
@@ -171,9 +173,13 @@ def colinear(o, a, b):
 def parallel(wall1, wall2, eps=1e-4):
     p1, p2 = np.array(wall1)
     p3, p4 = np.array(wall2)
-    x1, y1 = p2 - p1
-    x2, y2 = p4 - p3
-    return isclose(x1 * y2 - x2 * y1, 0, eps)
+    a, b = p2 - p1, p4 - p3
+    angle = (
+        np.arccos(np.abs(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))))
+        * 180
+        / np.pi
+    )
+    return angle < 5
 
 
 def walls2concave(walls):
@@ -190,11 +196,13 @@ def walls2concave(walls):
             p2p[p1] = set()
         p2p[p1].add(p0)
 
-    for p in p2p:
-        if len(p2p[p]) != 2:
-            return []
-
     s1 = walls[0][0]
+    for p in p2p:
+        if len(p2p[p]) > 2:
+            return []
+        elif len(p2p[p]) == 1:
+            s1 = p
+
     result.append(s1)
 
     p = s1
@@ -204,7 +212,7 @@ def walls2concave(walls):
                 result.append(c)
                 p = c
                 break
-    result.append(walls[0][0])
+    result.append(s1)
     return result
 
 
@@ -212,7 +220,13 @@ def group2rect(groups):
     concaves = []
     for walls in tqdm(groups):
         pts = walls2concave(walls)
-        concaves.append(Polygon(pts))
+        if len(pts) < 4:
+            continue
+        try:
+            concaves.append(Polygon(pts))
+        except Exception as e:
+            print(e)
+            continue
 
     groups = []
     for concave in concaves:
@@ -257,6 +271,9 @@ def group2rect(groups):
 
         for i in range(len(walls)):
             for j in range(i + 1, len(walls)):
+                # plt.plot([walls[i][0][0], walls[i][1][0]], [walls[i][0][1], walls[i][1][1]])
+                # plt.plot([walls[j][0][0], walls[j][1][0]], [walls[j][0][1], walls[j][1][1]])
+                # plt.show()
                 if (not parallel(walls[i], walls[j], 1e-2)) or colinear(
                     walls[i][0], walls[j][0], walls[j][1]
                 ):
@@ -264,9 +281,13 @@ def group2rect(groups):
                 polygon = convex_hull(
                     MultiPoint([walls[i][0], walls[i][1], walls[j][0], walls[j][1]])
                 )
-                if not isinstance(polygon, Polygon):
+                if not isinstance(polygon, Polygon) or not polygon.is_valid:
                     continue
-                if not within(polygon, base):
+                try:
+                    if not within(polygon, base):
+                        continue
+                except Exception as e:
+                    print(e)
                     continue
                 ufs.union(walls[i], walls[j])
 
