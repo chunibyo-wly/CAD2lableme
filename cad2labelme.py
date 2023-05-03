@@ -223,7 +223,7 @@ def group_walls(walls):
             result.append([])
             cnt += 1
         result[father2idx[father]].append(wall)
-    return [i for i in result if len(i) >= 4]
+    return [i for i in result if len(i) >= 4], [i[0] for i in result if len(i) == 1]
 
 
 def isclose(a, b, eps=1e-4):
@@ -464,7 +464,7 @@ def write_component(convexes, label):
     }
 
     hash = set()
-    for convex in tqdm(convexes):
+    for convex in convexes:
         wall = copy.deepcopy(template)
         convex = convex_hull(
             MultiPoint([line[0] for line in convex] + [line[1] for line in convex])
@@ -477,6 +477,33 @@ def write_component(convexes, label):
         wall["points"] = np.array(convex.exterior.xy).T.tolist()
         shapes.append(wall)
     return shapes
+
+
+def merge_wallwindow_segments(walls, single_segments):
+    result = set(single_segments)
+    hash = dict()
+    for wall in walls:
+        for segment in wall:
+            if segment[0] not in hash:
+                hash[segment[0]] = []
+            if segment[1] not in hash:
+                hash[segment[1]] = []
+            hash[segment[0]].append(segment)
+            hash[segment[1]].append(segment)
+    for segment in single_segments:
+        for p in segment:
+            if p in hash:
+                wall_segments = hash[p]
+                for wall in wall_segments:
+                    a, b = np.array(
+                        (wall[1][0] - wall[0][0], wall[1][1] - wall[0][1])
+                    ), np.array(
+                        (segment[1][0] - segment[0][0], segment[1][1] - segment[0][1])
+                    )
+                    if abs(np.dot(a / np.linalg.norm(a), b / np.linalg.norm(b))) < 1e-3:
+                        result.add(wall)
+    windows, _ = group_walls(list(result))
+    return [[segment for segment in window if segment in single_segments] for window in windows]
 
 
 def main():
@@ -502,7 +529,7 @@ def main():
         _image = image.copy()
         _image = debug_walls(_image, walls)
         cv2.imwrite(f"./debug/{floor}_origin.png", _image)
-        groups = group_walls(walls)
+        groups, _ = group_walls(walls)
 
         rects, concaves = group2rect(groups)
         _image = image.copy()
@@ -516,9 +543,9 @@ def main():
         cv2.imwrite(f"./debug/{floor}_group.png", _image)
         # 墙
 
+        # 门, 部分窗
         doors, segments = collect_doors_and_windows(items)
-        # 门
-        groups = group_walls(segments)
+        groups, single_segments = group_walls(segments)
         _image = image.copy()
         for group in tqdm(groups, desc="opening segments 可视化"):
             _image = debug_walls(_image, group)
@@ -532,7 +559,15 @@ def main():
         for door in tqdm(doors, desc="door 可视化"):
             _image = debug_walls(_image, door)
         cv2.imwrite(f"./debug/{floor}_opening_result.png", _image)
-        # 门
+        # 门, 部分窗
+
+        # 特殊窗户
+        additional_windows = merge_wallwindow_segments(rects, single_segments)
+        _image = image.copy()
+        for window in tqdm(additional_windows, desc="特殊 window 可视化"):
+            _image = debug_walls(_image, window)
+        cv2.imwrite(f"./debug/{floor}_additional_window.png", _image)
+        # 特殊窗户
 
         # 写文件
         output = {
@@ -548,7 +583,7 @@ def main():
         }
 
         output["shapes"] += write_component(rects, "wall")
-        output["shapes"] += write_component(windows, "window")
+        output["shapes"] += write_component(windows + additional_windows, "window")
         output["shapes"] += write_component(doors, "door")
 
         with open(f"./output/{floor}.json", "w", encoding="utf-8") as f:
