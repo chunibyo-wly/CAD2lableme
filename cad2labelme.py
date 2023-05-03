@@ -14,7 +14,6 @@ from shape import show
 
 ox, oy, w, h = 0, 0, 0, 0
 scale = 0
-point2idx = {}
 
 
 class UnionFindSet(object):
@@ -113,7 +112,7 @@ def collect_walls(items):
         feature_type = item["json_featuretype"]
         geometry = item["json_geometry"]["type"]
         coordinates = item["json_geometry"]["coordinates"]
-        if feature_type == "WALL" and geometry == "LineString":
+        if feature_type in ("WALL") and geometry == "LineString":
             coordinates = np.array(coordinates)
             n = len(coordinates)
             for i in range(n - 1):
@@ -127,10 +126,52 @@ def collect_walls(items):
     return np.array(walls)
 
 
-def debug_walls(image, walls):
+def collect_doors_and_windows(items):
+    doors, segments = [], []
+    for item in items:
+        feature_type = item["json_featuretype"]
+        geometry = item["json_geometry"]["type"]
+        coordinates = item["json_geometry"]["coordinates"]
+
+        if feature_type in ("WINDOW", "DOOR_FIRE") and geometry == "LineString":
+            coordinates = np.array(coordinates)
+            n = len(coordinates)
+            tmp = []
+            for i in range(n - 1):
+                p0, p1 = copy.deepcopy(coordinates[i]), copy.deepcopy(
+                    coordinates[i + 1]
+                )
+                p0, p1 = transform_axis(p0), transform_axis(p1)
+                if isclose(p0[0], p1[0], 1) and isclose(p0[1], p1[1], 1):
+                    continue
+                if n >= 15:
+                    tmp.append([p0, p1])
+                elif n == 2:
+                    segments.append([p0, p1])
+            if n >= 15:
+                doors.append(tmp)
+    return doors, segments
+
+
+def debug_walls(image, walls, door=False):
     image = image.copy()
     thickness = 3
     color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+
+    # if door:
+    #     a, o, b = np.array(walls)
+    #     r = int(np.linalg.norm(a - o))
+    #     cv2.ellipse(
+    #         image,
+    #         o.astype(np.int32),
+    #         (r, r),
+    #         0,
+    #         270,
+    #         180,
+    #         color,
+    #         thickness,
+    #     )
+    #     return image
 
     if isinstance(walls, Polygon):
         cv2.polylines(
@@ -143,10 +184,16 @@ def debug_walls(image, walls):
     else:
         for wall in walls:
             p0, p1 = np.array(wall)
-            p01 = (p1 - p0) // 10 * 1
-            p0 += p01
-            p1 -= p01
-            cv2.line(image, (p0[0], p0[1]), (p1[0], p1[1]), color, thickness)
+            # p01 = (p1 - p0) // 10 * 1
+            # p0 += p01
+            # p1 -= p01
+            cv2.line(
+                image,
+                (int(p0[0]), int(p0[1])),
+                (int(p1[0]), int(p1[1])),
+                color,
+                thickness,
+            )
     return image
 
 
@@ -176,7 +223,7 @@ def group_walls(walls):
             result.append([])
             cnt += 1
         result[father2idx[father]].append(wall)
-    return result
+    return [i for i in result if len(i) >= 4]
 
 
 def isclose(a, b, eps=1e-4):
@@ -247,7 +294,7 @@ def walls2concave(walls):
 
 def group2rect(groups):
     concaves = []
-    for walls in tqdm(groups):
+    for walls in groups:
         pts = walls2concave(walls)
         if len(pts) < 4:
             continue
@@ -296,7 +343,7 @@ def group2rect(groups):
                 break
 
     result = []
-    for idx, walls in tqdm(enumerate(groups)):
+    for idx, walls in enumerate(groups):
         ufs = UnionFindSet(walls)
         base = concaves[idx]
 
@@ -338,6 +385,100 @@ def group2rect(groups):
     return result, concaves
 
 
+def group2convex(groups):
+    result = []
+    for group in groups:
+        convex = convex_hull(
+            MultiPoint([line[0] for line in group] + [line[1] for line in group])
+        )
+        result.append(convex)
+    return result
+
+
+def assign_segments2doors(doors, groups):
+    doors_dict = dict()
+    for door in doors:
+        doors_dict[(door[0][0][0], door[0][0][1])] = door
+        doors_dict[(door[-1][-1][0], door[-1][-1][1])] = door
+
+    results_door, results_window = [], []
+    for group in groups:
+        pts = np.array(group.exterior.xy).T.astype(np.int32).tolist()
+        flag = False
+        # 四边形上的点
+        for pt1 in pts:
+            pt1 = np.asarray(pt1)
+            # 曲线上的点
+            for pt2 in doors_dict:
+                door = doors_dict[pt2]
+                pt2 = np.asarray(pt2)
+                if np.linalg.norm(pt2 - pt1) <= 2:
+                    flag = True
+                    o = None
+                    for idx, p in enumerate(pts):
+                        if np.all(p == pt1):
+                            if np.linalg.norm(
+                                pts[(idx + 1) % 4] - pt1
+                            ) > np.linalg.norm(pts[idx - 1] - pt1):
+                                o = pts[(idx + 1) % 4]
+                            else:
+                                o = pts[idx - 1]
+                    door_pts = [i[0] for i in door]
+                    door_pts.append(door[-1][-1])
+                    r = np.mean([np.linalg.norm(i - o) for i in door_pts])
+                    _door_pts = [
+                        (i - o) / np.linalg.norm(i - o) * r + o for i in door_pts
+                    ]
+                    if np.any(door_pts[0] == pt2):
+                        _door_pts.reverse()
+                    _door_pts.insert(0, np.array(o))
+                    # ! 点数目控制，用来验证圆圈的顺序问题, 圆心->墙上的点->远点
+                    _door_pts = _door_pts[:-4]
+
+                    n = len(_door_pts)
+                    _door_pts += _door_pts
+
+                    new_door = [
+                        (tuple(p1), tuple(p2))
+                        for (p1, p2) in zip(_door_pts[:n], _door_pts[1 : n + 1])
+                    ]
+                    results_door.append(new_door)
+
+        if not flag:
+            n = len(pts)
+            pts += pts
+            results_window.append(
+                [(tuple(p1), tuple(p2)) for (p1, p2) in zip(pts[:n], pts[1 : n + 1])]
+            )
+
+    return results_door, results_window
+
+
+def write_component(convexes, label):
+    shapes = []
+
+    template = {
+        "label": label,
+        "shape_type": "polygon",
+        "flags": {},
+    }
+
+    hash = set()
+    for convex in tqdm(convexes):
+        wall = copy.deepcopy(template)
+        convex = convex_hull(
+            MultiPoint([line[0] for line in convex] + [line[1] for line in convex])
+        )
+        if convex in hash:
+            continue
+        hash.add(convex)
+        if not isinstance(convex, Polygon):
+            continue
+        wall["points"] = np.array(convex.exterior.xy).T.tolist()
+        shapes.append(wall)
+    return shapes
+
+
 def main():
     global ox, oy, w, h, scale
 
@@ -348,11 +489,15 @@ def main():
 
         with open(f"./input/{floor}.json", "r", encoding="utf-8") as f:
             items = json.load(f)
+
+        # 画幅
         ox, oy, w, h = get_axis(items)
         scale = max(image.shape) / max(w, h)
         print(image.shape, w, h)
         print(image.shape[0] / image.shape[1], h / w, scale)
+        # 画幅
 
+        # 墙
         walls = collect_walls(items)
         _image = image.copy()
         _image = debug_walls(_image, walls)
@@ -361,14 +506,33 @@ def main():
 
         rects, concaves = group2rect(groups)
         _image = image.copy()
-        for concave in tqdm(concaves):
+        for concave in tqdm(concaves, desc="凹包可视化"):
             _image = debug_walls(_image, concave)
         cv2.imwrite(f"./debug/{floor}_concave.png", _image)
 
         _image = image.copy()
-        for rect in tqdm(rects):
+        for rect in tqdm(rects, desc="对应边可视化"):
             _image = debug_walls(_image, rect)
         cv2.imwrite(f"./debug/{floor}_group.png", _image)
+        # 墙
+
+        doors, segments = collect_doors_and_windows(items)
+        # 门
+        groups = group_walls(segments)
+        _image = image.copy()
+        for group in tqdm(groups, desc="opening segments 可视化"):
+            _image = debug_walls(_image, group)
+        cv2.imwrite(f"./debug/{floor}_opening_group.png", _image)
+
+        convexs = group2convex(groups)
+        doors, windows = assign_segments2doors(doors, convexs)
+        _image = image.copy()
+        for window in tqdm(windows, desc="window 的凸包可视化"):
+            _image = debug_walls(_image, window)
+        for door in tqdm(doors, desc="door 可视化"):
+            _image = debug_walls(_image, door)
+        cv2.imwrite(f"./debug/{floor}_opening_result.png", _image)
+        # 门
 
         # 写文件
         output = {
@@ -382,24 +546,11 @@ def main():
             "shapes": [],
             "imageData": None,
         }
-        wall_template = {
-            "label": "wall",
-            "shape_type": "polygon",
-            "flags": {},
-        }
-        hash = set()
-        for rect in tqdm(rects):
-            wall = copy.deepcopy(wall_template)
-            convex = convex_hull(
-                MultiPoint([line[0] for line in rect] + [line[1] for line in rect])
-            )
-            if convex in hash:
-                continue
-            hash.add(convex)
-            if not isinstance(convex, Polygon):
-                continue
-            wall["points"] = np.array(convex.exterior.xy).T.tolist()
-            output["shapes"].append(wall)
+
+        output["shapes"] += write_component(rects, "wall")
+        output["shapes"] += write_component(windows, "window")
+        output["shapes"] += write_component(doors, "door")
+
         with open(f"./output/{floor}.json", "w", encoding="utf-8") as f:
             json.dump(output, f)
         cv2.imwrite(f"./output/{floor}.png", image)
