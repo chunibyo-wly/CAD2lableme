@@ -3,7 +3,14 @@ import random
 import numpy as np
 import cv2
 import copy
-from shapely import MultiPoint, Polygon, convex_hull, within
+from shapely import (
+    MultiPoint,
+    Polygon,
+    convex_hull,
+    within,
+    minimum_rotated_rectangle,
+    concave_hull,
+)
 from tqdm import trange, tqdm
 import matplotlib.pyplot as plt
 from shape import show
@@ -454,7 +461,7 @@ def assign_segments2doors(doors, groups):
     return results_door, results_window
 
 
-def write_component(convexes, label):
+def write_component(convexes, label, rectangle=False):
     shapes = []
 
     template = {
@@ -462,6 +469,13 @@ def write_component(convexes, label):
         "shape_type": "polygon",
         "flags": {},
     }
+
+    if label == "door":
+        for convex in convexes:
+            door = copy.deepcopy(template)
+            door["points"] = np.array([i[0] for i in convex] + [convex[0][0]]).tolist()
+            shapes.append(door)
+        return shapes
 
     hash = set()
     for convex in convexes:
@@ -474,6 +488,8 @@ def write_component(convexes, label):
         hash.add(convex)
         if not isinstance(convex, Polygon):
             continue
+        if rectangle:
+            convex = minimum_rotated_rectangle(convex)
         wall["points"] = np.array(convex.exterior.xy).T.tolist()
         shapes.append(wall)
     return shapes
@@ -503,7 +519,16 @@ def merge_wallwindow_segments(walls, single_segments):
                     if abs(np.dot(a / np.linalg.norm(a), b / np.linalg.norm(b))) < 1e-3:
                         result.add(wall)
     windows, _ = group_walls(list(result))
-    return [[segment for segment in window if segment in single_segments] for window in windows]
+    return [
+        [segment for segment in window if segment in single_segments]
+        for window in windows
+    ]
+
+
+def get_boundary(shapes):
+    pts = [shape["points"] for shape in shapes]
+    convex = convex_hull(MultiPoint([j for i in pts for j in i]))
+    return np.array(convex.exterior.xy).T.tolist()
 
 
 def main():
@@ -582,9 +607,21 @@ def main():
             "imageData": None,
         }
 
-        output["shapes"] += write_component(rects, "wall")
-        output["shapes"] += write_component(windows + additional_windows, "window")
+        output["shapes"] += write_component(rects, "wall", True)
+        output["shapes"] += write_component(
+            windows + additional_windows, "window", True
+        )
         output["shapes"] += write_component(doors, "door")
+        # output["shapes"].append(
+        #     {
+        #         "label": "boundary",
+        #         "shape_type": "polygon",
+        #         "flags": {},
+        #         "points": get_boundary(output["shapes"]),
+        #     }
+        # )
+
+        output["boundary"] = get_boundary(output["shapes"])
 
         with open(f"./output/{floor}.json", "w", encoding="utf-8") as f:
             json.dump(output, f)
