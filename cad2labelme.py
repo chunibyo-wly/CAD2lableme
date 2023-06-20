@@ -581,8 +581,7 @@ def polygon2obj(groups):
             points.append([x1, y1, height])
             points.append([x2, y2, 0])
             points.append([x2, y2, height])
-            faces.append([cnt, cnt + 1, cnt + 2])
-            faces.append([cnt + 1, cnt + 2, cnt + 3])
+            faces.append([cnt, cnt + 1, cnt + 3, cnt + 2])
             cnt += 4
 
         if isinstance(group, Polygon):
@@ -600,18 +599,25 @@ def polygon2obj(groups):
 
 
 def main2():
-    with open(f"sjg/B1.json", "r", encoding="utf-8") as f:
+    prefix = "B1"
+    with open(f"sjg/{prefix}.json", "r", encoding="utf-8") as f:
         items = json.load(f)
     walls = collect_walls(items)
     groups, _ = group_walls(walls)
     concaves = groups2concave(groups, auto_link=False)
     # 取出groups所有的线段，绘制在一张图上
     points, faces = polygon2obj(concaves)
-    with open("sjg/B1.obj", "w") as f:
+    with open(f"sjg/{prefix}.obj", "w") as f:
+        f.write(
+            "mtllib out.mtl\nusemtl image\nvt 1.0 0.0 0.0\nvt 0.0 1.0 0.0\nvt 0.0 0.0 0.0\nvt 1.0 1.0 0.0\n"
+        )
         for point in points:
-            f.write(f"v {point[0]} {point[1]} {point[2]}\n")
+            f.write(f"v {point[0] / 1000} {point[1] / 1000} {point[2] / 1000}\n")
         for face in faces:
-            f.write(f"f {' '.join(map(str, face))}\n")
+            if len(face) == 4:
+                f.write(f"f {face[0]}/3 {face[1]}/2 {face[2]}/4 {face[3]}/1\n")
+            else:
+                f.write(f"f {' '.join(map(str, face))}\n")
     assert True
 
 
