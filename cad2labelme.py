@@ -10,6 +10,7 @@ from shapely import (
     within,
     minimum_rotated_rectangle,
     concave_hull,
+    LineString,
 )
 from tqdm import trange, tqdm
 import matplotlib.pyplot as plt
@@ -119,16 +120,22 @@ def collect_walls(items):
         feature_type = item["json_featuretype"]
         geometry = item["json_geometry"]["type"]
         coordinates = item["json_geometry"]["coordinates"]
-        if feature_type in ("WALL") and geometry == "LineString":
+        if (
+            "WALL" in feature_type or "COLS" in feature_type
+        ) and geometry == "LineString":
             coordinates = np.array(coordinates)
             n = len(coordinates)
             for i in range(n - 1):
                 p0, p1 = copy.deepcopy(coordinates[i]), copy.deepcopy(
                     coordinates[i + 1]
                 )
-                p0, p1 = transform_axis(p0), transform_axis(p1)
-                if isclose(p0[0], p1[0], 1) and isclose(p0[1], p1[1], 1):
-                    continue
+                if scale != 0:
+                    p0, p1 = transform_axis(p0), transform_axis(p1)
+                    if isclose(p0[0], p1[0], 1) and isclose(p0[1], p1[1], 1):
+                        continue
+                else:
+                    p0 = np.array([np.around(p0[0], 3), np.around(p0[1], 3)])
+                    p1 = np.array([np.around(p1[0], 3), np.around(p1[1], 3)])
                 walls.append([p0, p1])
     return np.array(walls)
 
@@ -252,6 +259,12 @@ def colinear(o, a, b):
     # return angle(np.array([x1, y1]), np.array([x2, y2])) < 3
 
 
+def perpendicular(o, a, b):
+    x1, y1 = a[0] - o[0], a[1] - o[1]
+    x2, y2 = b[0] - o[0], b[1] - o[1]
+    return isclose(x1 * x2 + y1 * y2, 0, eps=1e-2)
+
+
 def parallel(wall1, wall2, eps=1e-4):
     p1, p2 = np.array(wall1)
     p3, p4 = np.array(wall2)
@@ -282,7 +295,7 @@ def walls2concave(walls):
                 break
     for p in p2p:
         if len(p2p[p]) > 2:
-            return []
+            return [], False
         elif len(p2p[p]) == 1:
             s1 = p
 
@@ -296,20 +309,36 @@ def walls2concave(walls):
                 p = c
                 break
     result.append(s1)
-    return result
+    return result, len(p2p[s1]) == 2
 
 
-def group2rect(groups):
+def groups2concave(groups, auto_link=True):
     concaves = []
     for walls in groups:
-        pts = walls2concave(walls)
-        if len(pts) < 4:
+        pts, double = walls2concave(walls)
+        if auto_link and len(pts) < 4:
             continue
         try:
-            concaves.append(Polygon(pts))
+            if not auto_link and not double:
+                if len(pts) >= 4 and (
+                    colinear(pts[0], pts[-2], pts[1])
+                    or colinear(pts[-2], pts[0], pts[-3])
+                    or perpendicular(pts[0], pts[-2], pts[1])
+                    or perpendicular(pts[-2], pts[0], pts[-3])
+                ):
+                    concaves.append(Polygon(pts))
+                else:
+                    concaves.append(walls)
+            else:
+                concaves.append(Polygon(pts))
         except Exception as e:
             print(e)
             continue
+    return concaves
+
+
+def group2rect(groups):
+    concaves = groups2concave(groups)
 
     groups = []
     for concave in concaves:
@@ -531,6 +560,61 @@ def get_boundary(shapes):
     return np.array(convex.exterior.xy).T.tolist()
 
 
+def polygon2obj(groups):
+    points = []
+    faces = []
+
+    height = 5000
+    cnt = 1
+    for group in groups:
+        if isinstance(group, Polygon):
+            exterior = np.array(group.exterior.xy).T.tolist()
+            n = len(exterior)
+            exterior += exterior
+            segments = [[exterior[i], exterior[i + 1]] for i in range(n)]
+        else:
+            segments = group
+
+        for segment in segments:
+            x1, y1, x2, y2 = segment[0][0], segment[0][1], segment[1][0], segment[1][1]
+            points.append([x1, y1, 0])
+            points.append([x1, y1, height])
+            points.append([x2, y2, 0])
+            points.append([x2, y2, height])
+            faces.append([cnt, cnt + 1, cnt + 2])
+            faces.append([cnt + 1, cnt + 2, cnt + 3])
+            cnt += 4
+
+        if isinstance(group, Polygon):
+            n -= 1
+            for index, point in enumerate(exterior):
+                if index >= n:
+                    break
+                points.append([point[0], point[1], 0])
+                points.append([point[0], point[1], height])
+            faces.append([cnt + i * 2 for i in range(n)])
+            faces.append([cnt + i * 2 + 1 for i in range(n)])
+            cnt += n * 2
+
+    return points, faces
+
+
+def main2():
+    with open(f"sjg/B1.json", "r", encoding="utf-8") as f:
+        items = json.load(f)
+    walls = collect_walls(items)
+    groups, _ = group_walls(walls)
+    concaves = groups2concave(groups, auto_link=False)
+    # 取出groups所有的线段，绘制在一张图上
+    points, faces = polygon2obj(concaves)
+    with open("sjg/B1.obj", "w") as f:
+        for point in points:
+            f.write(f"v {point[0]} {point[1]} {point[2]}\n")
+        for face in faces:
+            f.write(f"f {' '.join(map(str, face))}\n")
+    assert True
+
+
 def main():
     global ox, oy, w, h, scale
 
@@ -629,4 +713,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main2()
