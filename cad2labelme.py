@@ -13,8 +13,9 @@ from shapely import (
     LineString,
 )
 from tqdm import trange, tqdm
-import matplotlib.pyplot as plt
-from shape import show
+from ifcutil import polygon2ifcwall
+import subprocess
+import ifcopenshell
 
 # opencv 坐标系左上角
 # CAD 坐标系左下角
@@ -117,12 +118,22 @@ def transform_axis(p):
 def collect_walls(items):
     walls = []
     for item in items:
-        feature_type = item["json_featuretype"]
-        geometry = item["json_geometry"]["type"]
-        coordinates = item["json_geometry"]["coordinates"]
+        if "json_featuretype" in item:
+            feature_type = item["json_featuretype"]
+            geometry = item["json_geometry"]["type"]
+            coordinates = item["json_geometry"]["coordinates"]
+        elif "type" in item and "id" in item:
+            feature_type = item["properties"]["Layer"]
+            geometry = item["geometry"]["type"]
+            coordinates = item["geometry"]["coordinates"]
+        else:
+            continue
         if (
             "WALL" in feature_type or "COLS" in feature_type
         ) and geometry == "LineString":
+            for coordinate in coordinates:
+                if len(coordinate) == 2:
+                    coordinate.append(0.0)
             coordinates = np.array(coordinates)
             n = len(coordinates)
             for i in range(n - 1):
@@ -143,31 +154,45 @@ def collect_walls(items):
 def collect_doors_and_windows(items):
     doors, segments = [], []
     for item in items:
-        feature_type = item["json_featuretype"]
-        geometry = item["json_geometry"]["type"]
-        coordinates = item["json_geometry"]["coordinates"]
+        if "json_featuretype" in item:
+            feature_type = item["json_featuretype"]
+            geometry = item["json_geometry"]["type"]
+            coordinates = item["json_geometry"]["coordinates"]
+        elif "type" in item and "id" in item:
+            feature_type = item["properties"]["Layer"]
+            geometry = item["geometry"]["type"]
+            coordinates = item["geometry"]["coordinates"]
+        else:
+            continue
 
-        if feature_type in ("WINDOW", "DOOR_FIRE") and geometry == "LineString":
-            coordinates = np.array(coordinates)
+        if feature_type in ("WINDOW", "DOOR_FIRE") and geometry in (
+            "LineString",
+            "Polygon",
+        ):
+            coordinates = np.array(coordinates).reshape(-1, 2)
             n = len(coordinates)
             tmp = []
             for i in range(n - 1):
                 p0, p1 = copy.deepcopy(coordinates[i]), copy.deepcopy(
                     coordinates[i + 1]
                 )
-                p0, p1 = transform_axis(p0), transform_axis(p1)
-                if isclose(p0[0], p1[0], 1) and isclose(p0[1], p1[1], 1):
-                    continue
-                if n >= 15:
+                if scale != 0:
+                    p0, p1 = transform_axis(p0), transform_axis(p1)
+                    if isclose(p0[0], p1[0], 1) and isclose(p0[1], p1[1], 1):
+                        continue
+                else:
+                    p0 = np.array(p0)
+                    p1 = np.array(p1)
+                if n >= 18:
                     tmp.append([p0, p1])
-                elif n == 2:
+                elif n >= 2:
                     segments.append([p0, p1])
             if n >= 15:
                 doors.append(tmp)
     return doors, segments
 
 
-def debug_walls(image, walls, door=False):
+def debug_walls(image, walls, door=False, _scale=1.0, offsetX=0, offsetY=0):
     image = image.copy()
     thickness = 3
     color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
@@ -188,23 +213,27 @@ def debug_walls(image, walls, door=False):
     #     return image
 
     if isinstance(walls, Polygon):
+        x, y = np.array(walls.exterior.xy)
         cv2.polylines(
             image,
-            [np.array(walls.exterior.xy).T.astype(np.int32)],
+            [(np.array([x + offsetX, y + offsetY]) / _scale).T.astype(np.int32)],
             True,
             color,
             thickness,
         )
     else:
-        for wall in walls:
+        tmp = np.array(walls)
+        tmp[:, :, 0] += offsetX
+        tmp[:, :, 1] += offsetY
+        for wall in tmp:
             p0, p1 = np.array(wall)
             # p01 = (p1 - p0) // 10 * 1
             # p0 += p01
             # p1 -= p01
             cv2.line(
                 image,
-                (int(p0[0]), int(p0[1])),
-                (int(p1[0]), int(p1[1])),
+                (int(p0[0] / _scale), int(p0[1] / _scale)),
+                (int(p1[0] / _scale), int(p1[1] / _scale)),
                 color,
                 thickness,
             )
@@ -342,9 +371,7 @@ def group2rect(groups):
 
     groups = []
     for concave in concaves:
-        pts = copy.deepcopy(
-            np.array(concave.exterior.xy).T.astype(np.int32).tolist()[:-1]
-        )
+        pts = copy.deepcopy(np.array(concave.exterior.xy).T.tolist()[:-1])
         n = len(pts)
         pts += pts
         groups.append(
@@ -439,26 +466,32 @@ def assign_segments2doors(doors, groups):
 
     results_door, results_window = [], []
     for group in groups:
-        pts = np.array(group.exterior.xy).T.astype(np.int32).tolist()
+        pts = np.array(group.exterior.xy).T.tolist()
         flag = False
         # 四边形上的点
-        for pt1 in pts:
+        for rect_idx, pt1 in enumerate(pts):
             pt1 = np.asarray(pt1)
             # 曲线上的点
             for pt2 in doors_dict:
+                if flag:
+                    break
                 door = doors_dict[pt2]
                 pt2 = np.asarray(pt2)
-                if np.linalg.norm(pt2 - pt1) <= 2:
+                if (
+                    np.linalg.norm(pt2 - pt1) <= 200
+                    and np.linalg.norm(pt2 - pt1)
+                    < np.linalg.norm(pt2 - pts[(rect_idx + 1) % 4])
+                    and np.linalg.norm(pt2 - pt1)
+                    < np.linalg.norm(pt2 - pts[rect_idx - 1])
+                ):
                     flag = True
                     o = None
-                    for idx, p in enumerate(pts):
-                        if np.all(p == pt1):
-                            if np.linalg.norm(
-                                pts[(idx + 1) % 4] - pt1
-                            ) > np.linalg.norm(pts[idx - 1] - pt1):
-                                o = pts[(idx + 1) % 4]
-                            else:
-                                o = pts[idx - 1]
+                    if np.linalg.norm(pts[(rect_idx + 1) % 4] - pt1) > np.linalg.norm(
+                        pts[rect_idx - 1] - pt1
+                    ):
+                        o = pts[(rect_idx + 1) % 4]
+                    else:
+                        o = pts[rect_idx - 1]
                     door_pts = [i[0] for i in door]
                     door_pts.append(door[-1][-1])
                     r = np.mean([np.linalg.norm(i - o) for i in door_pts])
@@ -469,7 +502,7 @@ def assign_segments2doors(doors, groups):
                         _door_pts.reverse()
                     _door_pts.insert(0, np.array(o))
                     # ! 点数目控制，用来验证圆圈的顺序问题, 圆心->墙上的点->远点
-                    _door_pts = _door_pts[:-4]
+                    _door_pts = _door_pts[:]
 
                     n = len(_door_pts)
                     _door_pts += _door_pts
@@ -618,7 +651,73 @@ def main2():
                 f.write(f"f {face[0]}/3 {face[1]}/2 {face[2]}/4 {face[3]}/1\n")
             else:
                 f.write(f"f {' '.join(map(str, face))}\n")
-    assert True
+
+
+def main3():
+    scale = 10
+
+    input_file = "./input/F1.dwg"
+    input_json = input_file.replace(".dwg", "_geo.json")
+    subprocess.run(
+        [
+            "/usr/local/bin/dwgread",
+            input_file,
+            "-O",
+            "GeoJson",
+            "-o",
+            input_json,
+        ],
+        stdout=subprocess.PIPE,
+        universal_newlines=True,
+    )
+
+    with open(input_json, "r", encoding="utf-8") as f:
+        items = json.load(f)
+        items = items["features"] if "features" in items else items
+
+    walls = collect_walls(items)
+    _walls = np.array(walls)
+    _maxx, _maxy = np.amax(_walls.reshape(-1, 2), axis=0)
+    _minx, _miny = np.amin(_walls.reshape(-1, 2), axis=0)
+
+    width, height = int(_maxx - _minx) // scale, int(_maxy - _miny) // scale
+
+    image = np.zeros((height, width, 3))
+    image.fill(255)
+
+    groups, _ = group_walls(walls)
+    concaves = groups2concave(groups, auto_link=False)
+    _image = image.copy()
+    for concave in tqdm(concaves, desc="凹包可视化"):
+        _image = debug_walls(
+            _image, concave, _scale=scale, offsetX=-_minx, offsetY=-_miny
+        )
+    cv2.imwrite(f"./debug/origin3.png", _image)
+    image[_image != (255, 255, 255)] = 0
+
+    doors, segments = collect_doors_and_windows(items)
+    _image = image.copy()
+    for door in tqdm(doors, desc="door 可视化"):
+        _image = debug_walls(_image, door, _scale=scale, offsetX=-_minx, offsetY=-_miny)
+    cv2.imwrite(f"./debug/origin4.png", _image)
+
+    groups, single_segments = group_walls(segments)
+    convexes = group2convex(groups)
+    doors, windows = assign_segments2doors(doors, convexes)
+    windows += merge_wallwindow_segments(walls, single_segments)
+
+    _image = image.copy()
+    for window in tqdm(windows, desc="window 可视化"):
+        _image = debug_walls(
+            _image, window, _scale=scale, offsetX=-_minx, offsetY=-_miny
+        )
+    for door in tqdm(doors, desc="door 可视化"):
+        _image = debug_walls(_image, door, _scale=scale, offsetX=-_minx, offsetY=-_miny)
+    cv2.imwrite(f"./debug/origin5.png", _image)
+
+    # ifc = ifcopenshell.template.create()
+    # ifc = polygon2ifcwall(ifc, concaves)
+    # ifc.write("a.ifc")
 
 
 def main():
@@ -644,8 +743,8 @@ def main():
         _image = image.copy()
         _image = debug_walls(_image, walls)
         cv2.imwrite(f"./debug/{floor}_origin.png", _image)
-        groups, _ = group_walls(walls)
 
+        groups, _ = group_walls(walls)
         rects, concaves = group2rect(groups)
         _image = image.copy()
         for concave in tqdm(concaves, desc="凹包可视化"):
@@ -719,4 +818,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main2()
+    main3()
