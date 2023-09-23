@@ -145,8 +145,8 @@ def collect_walls(items):
                     if isclose(p0[0], p1[0], 1) and isclose(p0[1], p1[1], 1):
                         continue
                 else:
-                    p0 = np.array([np.around(p0[0], 3), np.around(p0[1], 3)])
-                    p1 = np.array([np.around(p1[0], 3), np.around(p1[1], 3)])
+                    p0 = np.around(p0, 3)[:2]
+                    p1 = np.around(p1, 3)[:2]
                 walls.append([p0, p1])
     return np.array(walls)
 
@@ -181,8 +181,8 @@ def collect_doors_and_windows(items):
                     if isclose(p0[0], p1[0], 1) and isclose(p0[1], p1[1], 1):
                         continue
                 else:
-                    p0 = np.array(p0)
-                    p1 = np.array(p1)
+                    p0 = np.around(p0, 3)[:2]
+                    p1 = np.around(p1, 3)[:2]
                 if n >= 18:
                     tmp.append([p0, p1])
                 elif n >= 2:
@@ -222,7 +222,7 @@ def debug_walls(image, walls, door=False, _scale=1.0, offsetX=0, offsetY=0):
             thickness,
         )
     else:
-        tmp = np.array(walls)
+        tmp = np.array(list(walls))
         tmp[:, :, 0] += offsetX
         tmp[:, :, 1] += offsetY
         for wall in tmp:
@@ -502,7 +502,7 @@ def assign_segments2doors(doors, groups):
                         _door_pts.reverse()
                     _door_pts.insert(0, np.array(o))
                     # ! 点数目控制，用来验证圆圈的顺序问题, 圆心->墙上的点->远点
-                    _door_pts = _door_pts[:]
+                    _door_pts = _door_pts[:-4]
 
                     n = len(_door_pts)
                     _door_pts += _door_pts
@@ -557,11 +557,20 @@ def write_component(convexes, label, rectangle=False):
     return shapes
 
 
-def merge_wallwindow_segments(walls, single_segments):
+def merge_wallwindow_segments(walls, single_segments, FME=True):
     result = set(single_segments)
     hash = dict()
     for wall in walls:
-        for segment in wall:
+        if FME:
+            for segment in wall:
+                if segment[0] not in hash:
+                    hash[segment[0]] = []
+                if segment[1] not in hash:
+                    hash[segment[1]] = []
+                hash[segment[0]].append(segment)
+                hash[segment[1]].append(segment)
+        else:
+            segment = ((wall[0][0], wall[0][1]), (wall[1][0], wall[1][1]))
             if segment[0] not in hash:
                 hash[segment[0]] = []
             if segment[1] not in hash:
@@ -580,11 +589,9 @@ def merge_wallwindow_segments(walls, single_segments):
                     )
                     if abs(np.dot(a / np.linalg.norm(a), b / np.linalg.norm(b))) < 1e-3:
                         result.add(wall)
+    # return result
     windows, _ = group_walls(list(result))
-    return [
-        [segment for segment in window if segment in single_segments]
-        for window in windows
-    ]
+    return windows
 
 
 def get_boundary(shapes):
@@ -680,10 +687,10 @@ def main3():
     _maxx, _maxy = np.amax(_walls.reshape(-1, 2), axis=0)
     _minx, _miny = np.amin(_walls.reshape(-1, 2), axis=0)
 
-    width, height = int(_maxx - _minx) // scale, int(_maxy - _miny) // scale
-
-    image = np.zeros((height, width, 3))
-    image.fill(255)
+    width, height = np.around((_maxx - _minx) / scale).astype(np.int32), np.around(
+        (_maxy - _miny) / scale
+    ).astype(np.int32)
+    image = np.full((height, width, 3), 255, dtype=np.int32)
 
     groups, _ = group_walls(walls)
     concaves = groups2concave(groups, auto_link=False)
@@ -704,7 +711,7 @@ def main3():
     groups, single_segments = group_walls(segments)
     convexes = group2convex(groups)
     doors, windows = assign_segments2doors(doors, convexes)
-    windows += merge_wallwindow_segments(walls, single_segments)
+    windows += merge_wallwindow_segments(walls, single_segments, FME=False)
 
     _image = image.copy()
     for window in tqdm(windows, desc="window 可视化"):
