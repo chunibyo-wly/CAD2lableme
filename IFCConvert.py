@@ -7,7 +7,7 @@ import sys
 
 doc = FreeCAD.newDocument()
 
-HEIGHT = 3000
+HEIGHT = int(sys.argv[3]) if len(sys.argv) > 3 else 3000
 OBJS = []
 
 
@@ -227,6 +227,7 @@ def main():
     doc.recompute()
 
     file = ".".join(file.split(".")[:-1])
+
     doc.saveAs(f"{file}.FCStd")
     exportIFC.export(OBJS, f"{file}.ifc")
 

@@ -16,6 +16,7 @@ from shapely import (
 from tqdm import trange, tqdm
 import subprocess
 import pickle
+import sys
 
 # from ifcutil import polygon2ifcwall
 # import ifcopenshell
@@ -715,7 +716,7 @@ def main2():
                 f.write(f"f {' '.join(map(str, face))}\n")
 
 
-def proceed(input_file):
+def proceed(input_file, height = 4000):
     scale = 10
 
     basename = os.path.basename(input_file).split(".")[0]
@@ -743,10 +744,10 @@ def proceed(input_file):
     _maxx, _maxy = np.amax(_walls.reshape(-1, 2), axis=0)
     _minx, _miny = np.amin(_walls.reshape(-1, 2), axis=0)
 
-    width, height = np.around((_maxx - _minx) / scale).astype(np.int32), np.around(
-        (_maxy - _miny) / scale
-    ).astype(np.int32)
-    image = np.full((height, width, 3), 255, dtype=np.int32)
+    # width, height = np.around((_maxx - _minx) / scale).astype(np.int32), np.around(
+    #     (_maxy - _miny) / scale
+    # ).astype(np.int32)
+    # image = np.full((height, width, 3), 255, dtype=np.int32)
 
     groups, _ = group_walls(walls)
     concaves = groups2concave(groups, auto_link=False)
@@ -759,7 +760,7 @@ def proceed(input_file):
     # image[_image != (255, 255, 255)] = 0
 
     doors, segments = collect_doors_and_windows(items)
-    _image = image.copy()
+    # _image = image.copy()
     # for door in tqdm(doors, desc="door 可视化"):
     #     _image = debug_walls(_image, door, _scale=scale, offsetX=-_minx, offsetY=-_miny)
     # cv2.imwrite(f"./debug/origin4.png", _image)
@@ -808,7 +809,8 @@ def proceed(input_file):
             file,
         )
 
-    subprocess.run(["/usr/bin/freecadcmd-daily", "IFCConvert.py", file_path])
+    subprocess.run(["/usr/bin/freecadcmd-daily", "IFCConvert.py", file_path, str(height)])
+    return file_path.replace('pickle', 'ifc')
 
 
 def main():
