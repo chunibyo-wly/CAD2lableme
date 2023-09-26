@@ -1,4 +1,5 @@
 import json
+import os
 import random
 import numpy as np
 import cv2
@@ -13,9 +14,11 @@ from shapely import (
     LineString,
 )
 from tqdm import trange, tqdm
-from ifcutil import polygon2ifcwall
 import subprocess
-import ifcopenshell
+import pickle
+
+# from ifcutil import polygon2ifcwall
+# import ifcopenshell
 
 # opencv 坐标系左上角
 # CAD 坐标系左下角
@@ -113,6 +116,58 @@ def transform_axis(p):
     x, y = p * scale
     p = np.array([np.around(x), np.around(y)], dtype=np.int32)
     return p
+
+
+def polygon_to_line_segments(concaves):
+    line_segments = []
+
+    for concave in concaves:
+        if isinstance(concave, Polygon):
+            exterior_coords = concave.exterior.coords
+            num_coords = len(exterior_coords)
+
+            for i in range(num_coords - 1):
+                segment_start = exterior_coords[i]
+                segment_end = exterior_coords[i + 1]
+                line_segments.append((segment_start, segment_end))
+        else:
+            line_segments += concave
+
+    return line_segments
+
+
+def line_segment_intersection(line, line_segments):
+    line_start = line[0]
+    line_end = line[1]
+    line_direction = line_end - line_start
+    line_normal = np.array([-line_direction[1], line_direction[0]])
+
+    min_distance = float("inf")  # 初始化最小距离为正无穷
+    min_distance_index = -1  # 初始化最小距离对应的线段索引为-1
+
+    for i, segment in enumerate(line_segments):
+        segment_start = segment[0]
+        segment_end = segment[1]
+        segment_direction = segment_end - segment_start
+        segment_normal = np.array([-segment_direction[1], segment_direction[0]])
+
+        dot_product = np.dot(line_normal, segment_normal)
+
+        if np.abs(dot_product) < 1e-6:
+            continue
+
+        t = np.dot(segment_start - line_start, segment_normal) / dot_product
+        u = np.dot(segment_start - line_start, line_normal) / dot_product
+
+        if 0 <= t <= 1 and 0 <= u <= 1:
+            intersection_point = line_start + t * line_direction
+            distance = np.linalg.norm(intersection_point - line_start)  # 计算距离
+
+            if distance < min_distance:
+                min_distance = distance
+                min_distance_index = i
+
+    return min_distance_index, min_distance
 
 
 def collect_walls(items):
@@ -660,10 +715,11 @@ def main2():
                 f.write(f"f {' '.join(map(str, face))}\n")
 
 
-def main3():
+def proceed(input_file):
     scale = 10
 
-    input_file = "./input/F1.dwg"
+    basename = os.path.basename(input_file).split(".")[0]
+
     input_json = input_file.replace(".dwg", "_geo.json")
     subprocess.run(
         [
@@ -694,37 +750,65 @@ def main3():
 
     groups, _ = group_walls(walls)
     concaves = groups2concave(groups, auto_link=False)
-    _image = image.copy()
-    for concave in tqdm(concaves, desc="凹包可视化"):
-        _image = debug_walls(
-            _image, concave, _scale=scale, offsetX=-_minx, offsetY=-_miny
-        )
-    cv2.imwrite(f"./debug/origin3.png", _image)
-    image[_image != (255, 255, 255)] = 0
+    # _image = image.copy()
+    # for concave in tqdm(concaves, desc="凹包可视化"):
+    #     _image = debug_walls(
+    #         _image, concave, _scale=scale, offsetX=-_minx, offsetY=-_miny
+    #     )
+    # cv2.imwrite(f"./debug/origin3.png", _image)
+    # image[_image != (255, 255, 255)] = 0
 
     doors, segments = collect_doors_and_windows(items)
     _image = image.copy()
-    for door in tqdm(doors, desc="door 可视化"):
-        _image = debug_walls(_image, door, _scale=scale, offsetX=-_minx, offsetY=-_miny)
-    cv2.imwrite(f"./debug/origin4.png", _image)
+    # for door in tqdm(doors, desc="door 可视化"):
+    #     _image = debug_walls(_image, door, _scale=scale, offsetX=-_minx, offsetY=-_miny)
+    # cv2.imwrite(f"./debug/origin4.png", _image)
 
     groups, single_segments = group_walls(segments)
     convexes = group2convex(groups)
     doors, windows = assign_segments2doors(doors, convexes)
     windows += merge_wallwindow_segments(walls, single_segments, FME=False)
 
-    _image = image.copy()
-    for window in tqdm(windows, desc="window 可视化"):
-        _image = debug_walls(
-            _image, window, _scale=scale, offsetX=-_minx, offsetY=-_miny
-        )
-    for door in tqdm(doors, desc="door 可视化"):
-        _image = debug_walls(_image, door, _scale=scale, offsetX=-_minx, offsetY=-_miny)
-    cv2.imwrite(f"./debug/origin5.png", _image)
+    windows = group2convex(windows)
 
-    # ifc = ifcopenshell.template.create()
-    # ifc = polygon2ifcwall(ifc, concaves)
-    # ifc.write("a.ifc")
+    # 计算门所在墙的厚度
+    door_wall_width = []
+    wall_segments = np.array(polygon_to_line_segments(concaves))
+    for door in doors:
+        p1, p2 = np.array(door[0])[:2]
+        tmp_index, tmp_distance = line_segment_intersection((p1, p2), wall_segments)
+        if tmp_distance <= np.linalg.norm(p1 - p2) * 0.1:
+            door_wall_width.append(
+                np.linalg.norm(
+                    wall_segments[tmp_index][0] - wall_segments[tmp_index][1]
+                )
+            )
+        else:
+            door_wall_width.append(-1)
+
+    # _image = image.copy()
+    # for window in tqdm(windows, desc="window 可视化"):
+    #     _image = debug_walls(
+    #         _image, window, _scale=scale, offsetX=-_minx, offsetY=-_miny
+    #     )
+    # for door in tqdm(doors, desc="door 可视化"):
+    #     _image = debug_walls(_image, door, _scale=scale, offsetX=-_minx, offsetY=-_miny)
+    # cv2.imwrite(f"./debug/origin5.png", _image)
+
+    file_path = f"./output/{basename}.pickle"
+    with open(file_path, "wb") as file:
+        pickle.dump(
+            {
+                "walls": concaves,
+                "windows": windows,
+                "doors": doors,
+                "doors_width": door_wall_width,
+                "slab": (_minx, _miny, _maxx, _maxy),
+            },
+            file,
+        )
+
+    subprocess.run(["/usr/bin/freecadcmd-daily", "IFCConvert.py", file_path])
 
 
 def main():
@@ -825,4 +909,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main3()
+    import glob
+
+    files = glob.glob("./input/*.dwg")
+    for file in tqdm(files):
+        proceed(file)

@@ -8,7 +8,7 @@ import numpy as np
 
 
 @dataclass
-class rect:
+class Rect:
     width: float
     height: float
 
@@ -19,7 +19,7 @@ class rect:
 
 
 @dataclass
-class circle:
+class Circle:
     radius: float
 
     def build(self, f):
@@ -27,7 +27,7 @@ class circle:
 
 
 @dataclass
-class opening:
+class Opening:
     x: float
     z: float
     shape: typing.Any
@@ -46,6 +46,9 @@ def create_ifcaxis2placement(f, point=_O, dir1=_Z, dir2=_X):
     point = f.createIfcCartesianPoint(point)
     dir1 = f.createIfcDirection(dir1)
     dir2 = f.createIfcDirection(dir2)
+    # https://standards.buildingsmart.org/IFC/RELEASE/IFC4_1/FINAL/HTML/schema/ifcgeometryresource/lexical/ifcaxis2placement3d.htm
+    # The IfcAxis2Placement3D provides location and orientations to place items in a three-dimensional space.
+    # The attribute Axis defines the Z direction, RefDirection the X direction. The Y direction is derived.
     axis2placement = f.createIfcAxis2Placement3D(point, dir1, dir2)
     return axis2placement
 
@@ -80,7 +83,7 @@ def create_ifcextrudedareasolid(
     return ifcextrudedareasolid
 
 
-def polygon2ifcwall(f, concaves):
+def polygon2ifcwall(f, concaves, window_type=False):
     owner_history = f.by_type("IfcOwnerHistory")[0]
     project = f.by_type("IfcProject")[0]
     context = f.by_type("IfcGeometricRepresentationContext")[0]
@@ -114,5 +117,50 @@ def polygon2ifcwall(f, concaves):
                 None,
             )
             f.add(wall)
+            if window_type:
+                opening = Opening(
+                    point_list_extrusion_area[0][0],
+                    point_list_extrusion_area[0][1],
+                    Rect(1000.0, 1000.0),
+                    100.0,
+                )
+                opening_placement = create_ifclocalplacement(
+                    f,
+                    (opening.x, 0.0, opening.z),
+                    (0.0, 1.0, 0.0),
+                    (1.0, 0.0, 0.0),
+                    wall_placement,
+                )
+                opening_solid = f.createIfcExtrudedAreaSolid(
+                    opening.shape.build(f),
+                    None,
+                    f.createIfcDirection(opening.direc),
+                    opening.depth,
+                )
+                opening_representation = f.createIfcShapeRepresentation(
+                    context, "Body", "SweptSolid", [opening_solid]
+                )
+                opening_shape = f.createIfcProductDefinitionShape(
+                    None, None, [opening_representation]
+                )
+                opening_element = f.createIfcOpeningElement(
+                    ifcopenshell.guid.new(),
+                    owner_history,
+                    "Opening",
+                    None,
+                    None,
+                    opening_placement,
+                    opening_shape,
+                    None,
+                )
+                window = f.createIfcRelVoidsElement(
+                    ifcopenshell.guid.new(),
+                    owner_history,
+                    None,
+                    None,
+                    wall,
+                    opening_element,
+                )
+                f.add(window)
 
     return f

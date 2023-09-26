@@ -9,3 +9,8 @@ venv
 *.bak
 test.json
 input/*geo.json
+*.pickle
+IFCexample.py
+*.FCStd
+*.FCStd1
+input2
