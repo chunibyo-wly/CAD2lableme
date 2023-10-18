@@ -695,8 +695,8 @@ def polygon2obj(groups):
 
 
 def main2():
-    prefix = "B1"
-    with open(f"sjg/{prefix}.json", "r", encoding="utf-8") as f:
+    prefix = "F4"
+    with open(f"input/{prefix}.json", "r", encoding="utf-8") as f:
         items = json.load(f)
     walls = collect_walls(items)
     groups, _ = group_walls(walls)
@@ -708,7 +708,7 @@ def main2():
             "mtllib out.mtl\nusemtl image\nvt 1.0 0.0 0.0\nvt 0.0 1.0 0.0\nvt 0.0 0.0 0.0\nvt 1.0 1.0 0.0\n"
         )
         for point in points:
-            f.write(f"v {point[0] / 1000} {point[1] / 1000} {point[2] / 1000}\n")
+            f.write(f"v {point[0]} {point[1]} {point[2]}\n")
         for face in faces:
             if len(face) == 4:
                 f.write(f"f {face[0]}/3 {face[1]}/2 {face[2]}/4 {face[3]}/1\n")
@@ -911,8 +911,9 @@ def main():
 
 
 if __name__ == "__main__":
-    import glob
+    main2()
+    # import glob
 
-    files = glob.glob("./input/*.dwg")
-    for file in tqdm(files):
-        proceed(file)
+    # files = glob.glob("./input/*.dwg")
+    # for file in tqdm(files):
+    #     proceed(file)

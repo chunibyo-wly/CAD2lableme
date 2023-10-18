@@ -1,4 +1,5 @@
 from datetime import timedelta, datetime
+import subprocess
 from typing import List
 from typing_extensions import Annotated
 
@@ -68,4 +69,23 @@ async def cad_reconstruction(
     result_file = proceed(temp_file, height * 1000)
     print(result_file)
     return FileResponse(result_file)
-    # return {"filenames": file.filename, "height": height}
+
+
+@app.post("/registration/")
+async def registration(
+    pointcloud_file: UploadFile = File(), cad_file: UploadFile = File()
+):
+    temp_file = "./tmp/tmp.obj"
+    with open(temp_file, "wb") as f:
+        f.write(await pointcloud_file.read())
+    subprocess.run(
+        [
+            "/home/chunibyo/workspace/3DLineDetection/build/src/LineFromPointCloud",
+            temp_file,
+            temp_file.replace(".obj", "_line1.obj"),
+        ]
+    )
+
+    temp_file = "./tmp/tmp.dwg"
+    with open(temp_file, "wb") as f:
+        f.write(await cad_file.read())
