@@ -71,21 +71,18 @@ async def cad_reconstruction(
     return FileResponse(result_file)
 
 
-@app.post("/registration/")
-async def registration(
-    pointcloud_file: UploadFile = File(), cad_file: UploadFile = File()
+@app.post("/merge/")
+async def cad_merge(
+    height: int = Form(),
+    cad: UploadFile = File(),
+    bim: UploadFile = File(),
+    username: str = Depends(get_current_user),
 ):
-    temp_file = "./tmp/tmp.obj"
-    with open(temp_file, "wb") as f:
-        f.write(await pointcloud_file.read())
-    subprocess.run(
-        [
-            "/home/chunibyo/workspace/3DLineDetection/build/src/LineFromPointCloud",
-            temp_file,
-            temp_file.replace(".obj", "_line1.obj"),
-        ]
-    )
-
     temp_file = "./tmp/tmp.dwg"
     with open(temp_file, "wb") as f:
-        f.write(await cad_file.read())
+        f.write(await cad.read())
+    with open("./output/tmp2.ifc", "wb") as f:
+        f.write(await bim.read())
+    result_file = proceed(temp_file, height * 1000, True)
+    print(result_file)
+    return FileResponse(result_file)

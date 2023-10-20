@@ -1,4 +1,4 @@
-import FreeCAD, Draft, Arch, exportIFC, Part
+import FreeCAD, Draft, Arch, exportIFC, Part, importIFC
 import pickle
 import numpy as np
 from tqdm import tqdm
@@ -55,7 +55,7 @@ def addWall(polygon: Polygon):
     wall = Arch.makeWall(face, height=HEIGHT)
     doc.recompute()
 
-    OBJS.append(wall)
+    # OBJS.append(wall)
     return wall
 
 
@@ -67,7 +67,7 @@ def addWallFromLine(p1, p2, width):
     wall = Arch.makeWall(line, length=None, width=width, height=HEIGHT)
     doc.recompute()
 
-    OBJS.append(wall)
+    # OBJS.append(wall)
     return wall
 
 
@@ -109,7 +109,7 @@ def addWindow(polygon: Polygon):
     if wall is not None:
         window.Hosts = wall
 
-    OBJS.append(window)
+    # OBJS.append(window)
     return window
 
 
@@ -158,7 +158,7 @@ def addDoor(door_segments, door_width):
 
     doc.recompute()
 
-    OBJS.append(door)
+    # OBJS.append(door)
     return door
 
 
@@ -184,7 +184,7 @@ def addSlab(x1, y1, x2, y2):
     slab.Label = "Slab"
     doc.recompute()
 
-    OBJS.append(slab)
+    # OBJS.append(slab)
     return slab
 
 
@@ -192,10 +192,12 @@ def main():
     if len(sys.argv) > 2:
         file = sys.argv[2]
     else:
-        file = "F1"
+        file = "./output/tmp.pickle"
 
     with open(f"{file}", "rb") as f:
         data = pickle.load(f)
+        global HEIGHT
+        HEIGHT = int(data["height"])
 
     # 添加墙
     walls = data["walls"]
@@ -225,9 +227,14 @@ def main():
         addDoor(door, door_width)
 
     doc.recompute()
+    if data["import"]:
+        importIFC.insert(file.replace("tmp.pickle", "tmp2.ifc"), doc.Name)
+    for obj in doc.Objects:
+        for prefix in ["Wall", "Window", "Door", "Slab"]:
+            if obj.Label.startswith(prefix):
+                OBJS.append(obj)
 
     file = ".".join(file.split(".")[:-1])
-
     doc.saveAs(f"{file}.FCStd")
     exportIFC.export(OBJS, f"{file}.ifc")
 

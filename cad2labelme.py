@@ -185,7 +185,7 @@ def collect_walls(items):
         else:
             continue
         if (
-            "WALL" in feature_type or "COLS" in feature_type
+            "WALL" in feature_type or "COLS" in feature_type or "wall" in feature_type
         ) and geometry == "LineString":
             for coordinate in coordinates:
                 if len(coordinate) == 2:
@@ -221,7 +221,7 @@ def collect_doors_and_windows(items):
         else:
             continue
 
-        if feature_type in ("WINDOW", "DOOR_FIRE") and geometry in (
+        if feature_type in ("WINDOW", "DOOR_FIRE", "window", "door") and geometry in (
             "LineString",
             "Polygon",
         ):
@@ -695,8 +695,8 @@ def polygon2obj(groups):
 
 
 def main2():
-    prefix = "F4"
-    with open(f"input/{prefix}.json", "r", encoding="utf-8") as f:
+    prefix = "F7"
+    with open(f"tmp/tmp_geo.json", "r", encoding="utf-8") as f:
         items = json.load(f)
     walls = collect_walls(items)
     groups, _ = group_walls(walls)
@@ -716,7 +716,7 @@ def main2():
                 f.write(f"f {' '.join(map(str, face))}\n")
 
 
-def proceed(input_file, height = 4000):
+def proceed(input_file, height=4000, importIFC=False):
     scale = 10
 
     basename = os.path.basename(input_file).split(".")[0]
@@ -796,7 +796,7 @@ def proceed(input_file, height = 4000):
     #     _image = debug_walls(_image, door, _scale=scale, offsetX=-_minx, offsetY=-_miny)
     # cv2.imwrite(f"./debug/origin5.png", _image)
 
-    file_path = f"./output/{basename}.pickle"
+    file_path = f"./output/tmp.pickle"
     with open(file_path, "wb") as file:
         pickle.dump(
             {
@@ -805,12 +805,16 @@ def proceed(input_file, height = 4000):
                 "doors": doors,
                 "doors_width": door_wall_width,
                 "slab": (_minx, _miny, _maxx, _maxy),
+                "height": height,
+                "import": importIFC
             },
             file,
         )
 
-    subprocess.run(["/usr/bin/freecadcmd-daily", "IFCConvert.py", file_path, str(height)])
-    return file_path.replace('pickle', 'ifc')
+    subprocess.run(
+        ["/usr/bin/freecadcmd-daily", "/mnt/d/workspace/cad2labelme/IFCConvert.py"]
+    )
+    return file_path.replace("pickle", "ifc")
 
 
 def main():
@@ -911,9 +915,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main2()
-    # import glob
+    # main2()
+    import glob
+    import shutil
 
-    # files = glob.glob("./input/*.dwg")
+    # files = glob.glob("/mnt/c/Users/35980/Desktop/test_data/CADBIM/*.dwg")
     # for file in tqdm(files):
-    #     proceed(file)
+    # output = proceed("/mnt/c/Users/35980/Desktop/1.dwg", importIFC=False)
+    output = proceed("/mnt/c/Users/35980/Desktop/a.dwg", importIFC=False)
+    # shutil.copy(output, file.replace(".dwg", ".ifc"))
+    # main2()
